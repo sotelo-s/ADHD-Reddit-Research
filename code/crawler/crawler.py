@@ -2,8 +2,8 @@
     Crawler para Old Reddit. Genera (o actualiza) dos ficheros, uno con los datos de los usuarios
     de los que se ha obtenido información y los posts y comentarios asociados a este.
     
-    Uso: python scraper.py <user_data.csv> <content_data.csv> <searched_phrases.csv> <subreddit_list.json>
-    Ejemplo: python3 scraper.py ./out/user_data.csv ./out/post_data.csv ./data/adhd_phrases.json ./data/adhd_search_subreddits.json
+    Uso: python crawler.py <user_data.csv> <content_data.csv> <searched_phrases.csv> <subreddit_list.json>
+    Ejemplo: python3 crawler.py ./out/user_data.csv ./out/post_data.csv ./data/adhd_phrases.json ./data/adhd_search_subreddits.json
 '''
 
 
@@ -302,7 +302,7 @@ def get_user_code(user, secret_key=None):
         return None
     
     if secret_key is None:
-        secret_key = os.environ.get('REDDIT_SECRET_KEY', 'default-fallback-key')
+        secret_key = os.environ.get('REDDIT_SECRET_KEY')
         if not secret_key:
             raise ValueError("Se requiere REDDIT_SECRET_KEY como variable de entorno")
         
@@ -500,7 +500,7 @@ def process_phrases():
 ##-------------------CODIGO PRINCIPAL-------------------##
 
 if len(sys.argv) < 5:
-    print("Uso: python scraper.py <user_data> <content_data> <searched_phrases.csv> <subreddit_list.json>")
+    print("Uso: python crawler.py <user_data> <content_data> <searched_phrases.csv> <subreddit_list.json>")
     sys.exit(1)
     
 ud_filename = sys.argv[1]
@@ -524,7 +524,7 @@ content_file,content_file_writer = prepare_file(c_filename,"content")
 adhd_phrases = process_phrases()
 
 #obtengo la clave secreta para el hash
-secret_key = os.environ.get('REDDIT_SECRET_KEY', 'default-fallback-key')
+secret_key = os.environ.get('REDDIT_SECRET_KEY')
 
 #busco usuarios y contenido
 search_users()
