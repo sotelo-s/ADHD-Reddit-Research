@@ -1,2 +1,2 @@
-# Deteccion-TDAH
-Detección de Trastornos de la Personalidad basada en Narrativas
+# ADHD Reddit Research
+Attention Deficit Hyperactivity Disorder Detection based on Narratives
