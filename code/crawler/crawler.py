@@ -3,7 +3,7 @@
     de los que se ha obtenido información y los posts y comentarios asociados a este.
     
     Uso: python crawler.py <user_data.csv> <content_data.csv> <searched_phrases.csv> <subreddit_list.json>
-    Ejemplo: python3 crawler.py ./out/user_data.csv ./out/post_data.csv ./data/adhd_phrases.json ./data/adhd_search_subreddits.json
+    Ejemplo: python3 crawler.py ../out/user_data.csv ../out/post_data.csv ./data/adhd_phrases.json ./data/adhd_search_subreddits.json
 '''
 
 
@@ -16,6 +16,11 @@ import json
 import hmac
 import hashlib
 import os
+import time
+import random
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
+
 
 ##---------------------CONSTANTES---------------------##
 
@@ -38,10 +43,14 @@ LIMIT_POST = 1
 URL = "https://old.reddit.com/"
 
 #cabeceras peticion (permite perfiles/posts +18, eliminar "Cookie" para no permitirlo)
+#no permite visitar otros subreddits que tienen otro tipo de warnings (ej: r/Drugs)
 HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
     'Cookie': 'over18=1'
 }
+
+#variación en los delays en segundos
+RANDOM_DELAY_VARIATION = 1
 
 ##----------------VARIABLES GLOBALES-------------------##
 
@@ -52,7 +61,7 @@ user_data = {}
 content_data = {}
 
 #frases que indican si el usuario tiene TDAH (cargado de un fichero)
-adhd_phrases = None
+adhd_pattern = None
 
 #subreddits de busqueda (cargado de un fichero)
 subreddits = None
@@ -70,6 +79,7 @@ user_file_writer = None
 #clave secreta para el hash
 secret_key = None
 
+session = None
 
 ##---------------------FUNCIONES------------------------##
 
@@ -77,6 +87,7 @@ secret_key = None
     Obtiene datos de gente con y sin TDAH de una lista de subreddits.
 '''
 def search_users():
+
     for sr in subreddits:
         new_users = 0
         new_posts = 0
@@ -90,39 +101,52 @@ def search_users():
         
         
         while url:
-            response = requests.get(url,headers=HEADERS)
-            
-            if response.status_code == 200: #si la request funciona
-        
-                content = response.content
-                soup = bs(content, 'html.parser')
-                users = soup.find_all('div', class_='thing')
+            try:
+                response = safe_get(url)
                 
-                #bucle de usuarios
-                for user in users:
+                if response.status_code == 429:
+                    print(f"Rate limit alcanzado. Esperando 120s...")
+                    random_delay(120)
+                    continue
+                
+                if response.status_code == 200: #si la request funciona
+            
+                    content = response.content
+                    soup = bs(content, 'html.parser')
+                    users = soup.find_all('div', class_='thing')
                     
-                    if not user.has_attr('data-author'): #no tiene autor, cuenta eliminada, nos lo saltamos
-                        continue
-                    
-                    #si es un post con pin (moderadores/threads) nos lo saltamos
-                    if bool(user.find('span', class_='stickied-tagline')):
-                        continue
-                    
-                    usercode = get_user_code(user,secret_key=secret_key)
+                    #bucle de usuarios
+                    for user in users:
                         
-                    new_users_au,new_posts_au,new_comments_au = process_user_data(usercode,user)
-                    new_users+=new_users_au
-                    new_posts+=new_posts_au
-                    new_comments+=new_comments_au
-                    
-                page += 1
-                next_button = soup.find('span', class_='next-button')
-        
-                if page > MAX_SR_PAGES or not next_button or not next_button.find('a'):
-                    break
-        
-        
-                url = next_button.find('a')['href']
+                        if not user.has_attr('data-author'): #no tiene autor, cuenta eliminada, nos lo saltamos
+                            continue
+                        
+                        #si es un post con pin (moderadores/threads) nos lo saltamos
+                        if bool(user.find('span', class_='stickied-tagline')):
+                            continue
+                        
+                        usercode = get_user_code(user,secret_key=secret_key)
+                            
+                        new_users_au,new_posts_au,new_comments_au = process_user_data(usercode,user)
+                        new_users+=new_users_au
+                        new_posts+=new_posts_au
+                        new_comments+=new_comments_au
+                        
+                    page += 1
+                    next_button = soup.find('span', class_='next-button')
+            
+                    if page > MAX_SR_PAGES or not next_button or not next_button.find('a'):
+                        break
+            
+            
+                    url = next_button.find('a')['href']
+                                        
+            except (requests.ConnectionError, requests.Timeout) as e:
+                print(f"Error de conexión: {e}")
+                print("Esperando 60 segundos antes de reintentar...")
+                random_delay(60)
+                continue
+            
         
         print(f"Usuarios encontrados: {new_users}")
         print(f"Posts encontrados: {new_posts}")
@@ -142,6 +166,9 @@ def process_user_data(usercode,raw_user_data):
     
     username = get_username(raw_user_data)
     
+    if username == "[deleted]":
+        return 0,0,0
+    
     has_ADHD = False
         
     #---posts
@@ -149,60 +176,85 @@ def process_user_data(usercode,raw_user_data):
     page = 1
     
     while url:
-        
-        response = requests.get(url,headers=HEADERS)
-    
-        if response.status_code == 200: #si la request funciona
-            content = response.content
-            soup = bs(content, 'html.parser')
-            posts = soup.find_all('div', class_='thing')
-                        
-            for post in posts:
-                code = get_content_code(post,secret_key=secret_key)
-                if code in content_data:
-                    continue
-                adhd,n = generate_content(usercode,code,get_content_url(post), post,"post")
-                new_posts+=n
-                has_ADHD = has_ADHD or adhd
-                
-                
-            page += 1
-            next_button = soup.find('span', class_='next-button')
-        
-            if page > MAX_POST_PAGES or not next_button or not next_button.find('a'):
-                break
-        
-            url = next_button.find('a')['href']
+        try:
+            response = safe_get(url)
             
+            if response.status_code == 429:
+                print(f"Rate limit alcanzado. Esperando 120s...")
+                random_delay(120)
+                continue
+        
+            if response.status_code == 200: #si la request funciona
+                
+                content = response.content
+                soup = bs(content, 'html.parser')
+                posts = soup.find_all('div', class_='thing')
+                                            
+                for post in posts:
+                    code = get_content_code(post,secret_key=secret_key)
+                    if code in content_data:
+                        continue
+                    adhd,n = generate_content(usercode,code,get_content_url(post), post,"post")
+                    new_posts+=n
+                    has_ADHD = has_ADHD or adhd
+                                        
+                    
+                page += 1
+                next_button = soup.find('span', class_='next-button')
+            
+                if page > MAX_POST_PAGES or not next_button or not next_button.find('a'):
+                    break
+            
+                url = next_button.find('a')['href']
+                                
+        except (requests.ConnectionError, requests.Timeout) as e:
+            print(f"Error de conexión: {e}")
+            print("Esperando 60 segundos antes de reintentar...")
+            random_delay(60)
+            continue
     
     #---comentarios    
     url = f"{URL}/user/{username}/comments?limit={LIMIT_COMMENT}"
     page = 1
     
     while url:
-        response = requests.get(url,headers=HEADERS)
-        
-        if response.status_code == 200: #si la request funciona
-            content = response.content
-            soup = bs(content, 'html.parser')
-            comments = soup.find_all('div', class_='thing')
-                        
-            for comment in comments:
-                code = get_content_code(comment,secret_key=secret_key)
-                if code in content_data:
-                    continue
-                
-                adhd,n = generate_content(usercode,code,get_content_url(comment),comment,"comment")    
-                new_comments+=n
-                has_ADHD = has_ADHD or adhd
-                
-            page += 1
-            next_button = soup.find('span', class_='next-button')
-        
-            if page > MAX_COMMENT_PAGES or not next_button or not next_button.find('a'):
-                break
-        
-            url = next_button.find('a')['href']
+        try:
+            response = safe_get(url)
+            
+            if response.status_code == 429:
+                print(f"Rate limit alcanzado. Esperando 120s...")
+                random_delay(120)
+                continue
+            
+            if response.status_code == 200: #si la request funciona
+                content = response.content
+                soup = bs(content, 'html.parser')
+                comments = soup.find_all('div', class_='thing')
+                                            
+                for comment in comments:
+                    code = get_content_code(comment,secret_key=secret_key)
+                    if code in content_data:
+                        continue
+                    
+                    adhd,n = generate_content(usercode,code,get_content_url(comment),comment,"comment")    
+                    new_comments+=n
+                    has_ADHD = has_ADHD or adhd
+                    
+                    
+                page += 1
+                next_button = soup.find('span', class_='next-button')
+            
+                if page > MAX_COMMENT_PAGES or not next_button or not next_button.find('a'):
+                    break
+            
+                url = next_button.find('a')['href']
+                                
+                                
+        except (requests.ConnectionError, requests.Timeout) as e:
+            print(f"Error de conexión: {e}")
+            print("Esperando 60 segundos antes de reintentar...")
+            random_delay(60)
+            continue
             
     #si el usuario existia y descubrimos que tiene TDAH, lo actualizamos en fichero
     if usercode in user_data and not user_data[usercode]["has_ADHD"] and has_ADHD:
@@ -246,8 +298,24 @@ def generate_content(usercode,content_code,url,raw_data,type):
         "type" : type,
         "subreddit" : raw_data.get("data-subreddit-prefixed")
     } #por ahora no guardo el titulo
-        
-    response = requests.get(f"{URL}/{url}",headers=HEADERS)
+    
+    retries=0
+    response = None
+    
+    while retries < 3:
+        try:
+            response = safe_get(f"{URL}/{url}")
+            response.raise_for_status()
+            break
+            
+        except (requests.RequestException) as e:
+            retries+=1
+            print(f"Error de conexión: {e}")
+            print("Esperando 60 segundos antes de reintentar...")
+            random_delay(60)
+            
+    if response == None:
+        return False, 0
     
     if response.status_code == 200: #si no hay errores
         soup = bs(response.content, 'html.parser')
@@ -290,7 +358,7 @@ def generate_content(usercode,content_code,url,raw_data,type):
     else:
         search = data["text"]
         
-    return search_ADHD(search), 1
+    return search_ADHD(adhd_pattern,search), 1
 
 
 '''
@@ -355,8 +423,8 @@ def get_content_url(content):
 '''
     Devuelve si el usuario indica que tiene TDAH en el texto dado
 '''
-def search_ADHD(text):
-    return any(pattern.search(text) for pattern in adhd_phrases)
+def search_ADHD(adhd_pattern,text):
+    return bool(adhd_pattern.search(text))
 
 
 ##FUNCIONES DE FICHEROS
@@ -468,67 +536,100 @@ def append_to_file(dictRow,type):
 '''
     Procesa las frases dadas para que permita palabras comodín ("?") y variaciones de "ADHD"
 '''        
-def process_phrases():
+def process_phrases(raw_phrases):
     adhd_phrases = []
+    
+    adhd_pattern = r'(?:ADHDau|AuDHD|ADHD|ADD[ \/]?ADHD|attention deficit hyperactivity disorder)'    
+    
     for phrase in raw_phrases:
         phrase = phrase.lower()
         
-        adhd_variations = [
-            r'ADHD',
-            r'ADHDau', 
-            r'ADD[/ ]?ADHD',
-            r'ADD\s+ADHD',
-            r'ADD/?ADHD'
-        ]
-        adhd_pattern = r'(?:' + '|'.join(adhd_variations) + r')'
+        phrase = phrase.replace('adhd', '{{ADHD}}')
+            
+        phrase = re.escape(phrase)
+            
+        phrase = phrase.replace(r'\?', r'[\w\'-]+')
+            
+        phrase = phrase.replace(r'\{\{ADHD\}\}', adhd_pattern)
+            
+        phrase = r'\b' + phrase + r'\b'
+                    
+        adhd_phrases.append(phrase)
         
-        temp_phrase = phrase.replace('adhd', '{{ADHD}}')
-            
-        pattern = temp_phrase.casefold()
-            
-        pattern = pattern.replace('?', r'\w+')
-            
-        pattern = pattern.replace('{{adhd}}', adhd_pattern)
-            
-        pattern = r'\b' + pattern + r'\b'
-            
-        adhd_phrases.append(re.compile(pattern, re.IGNORECASE))
+    pattern = r'(?:' + '|'.join(adhd_phrases) + r')'
+    
+    return re.compile(pattern,re.IGNORECASE)
 
-    return adhd_phrases
 
+def create_session():
+    session = requests.Session()
+    
+    retry_strategy = Retry(
+        total=3,
+        backoff_factor=2,
+        status_forcelist=[429, 500, 502, 503, 504],
+        raise_on_status=False
+    )
+    
+    adapter = HTTPAdapter(max_retries=retry_strategy)
+    session.mount("http://", adapter)
+    session.mount("https://", adapter)
+    session.headers.update(HEADERS)
+    
+    return session
+
+'''
+    Añade variación aleatoria al delay base
+'''
+def random_delay(base_delay):
+    variation = random.uniform(-RANDOM_DELAY_VARIATION, RANDOM_DELAY_VARIATION)
+    actual_delay = max(0.5, base_delay + variation)
+    time.sleep(actual_delay)
+
+
+def safe_get(url):
+    random_delay(3)
+    return session.get(url, timeout=30)
 
 ##-------------------CODIGO PRINCIPAL-------------------##
 
-if len(sys.argv) < 5:
-    print("Uso: python crawler.py <user_data> <content_data> <searched_phrases.csv> <subreddit_list.json>")
-    sys.exit(1)
+if __name__ == "__main__":
+    if len(sys.argv) < 5:
+        print("Uso: python crawler.py <user_data> <content_data> <searched_phrases.csv> <subreddit_list.json>")
+        sys.exit(1)
+        
+    ud_filename = sys.argv[1]
+    c_filename = sys.argv[2]
+    phrases_filename = sys.argv[3]
+    sr_filename = sys.argv[4]
     
-ud_filename = sys.argv[1]
-c_filename = sys.argv[2]
-phrases_filename = sys.argv[3]
-sr_filename = sys.argv[4]
+    #obtengo la clave secreta para el hash
+    secret_key = os.environ.get('REDDIT_SECRET_KEY')
+    
+    if not secret_key:
+        raise ValueError("Se requiere REDDIT_SECRET_KEY como variable de entorno")
 
-#leo los ficheros
-user_data = read_csv_file(ud_filename)
-content_data = read_csv_file(c_filename)
+    #leo los ficheros
+    user_data = read_csv_file(ud_filename)
+    content_data = read_csv_file(c_filename)
 
-raw_phrases = read_json_file(phrases_filename)
-subreddits = read_json_file(sr_filename)
+    raw_phrases = read_json_file(phrases_filename)
+    subreddits = read_json_file(sr_filename)
 
 
-#preparo los ficheros para añadir informacion
-user_file,user_file_writer = prepare_file(ud_filename,"user")
-content_file,content_file_writer = prepare_file(c_filename,"content")
+    #preparo los ficheros para añadir informacion
+    user_file,user_file_writer = prepare_file(ud_filename,"user")
+    content_file,content_file_writer = prepare_file(c_filename,"content")
 
-#preparo las frases
-adhd_phrases = process_phrases()
+    #preparo las frases
+    adhd_pattern = process_phrases(raw_phrases)
 
-#obtengo la clave secreta para el hash
-secret_key = os.environ.get('REDDIT_SECRET_KEY')
+    #creo la sesión
+    session = create_session()
 
-#busco usuarios y contenido
-search_users()
+    #busco usuarios y contenido
+    search_users()
 
-#cerramos ficheros
-user_file.close()
-content_file.close()
+    #cerramos ficheros
+    user_file.close()
+    content_file.close()
