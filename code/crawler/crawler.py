@@ -305,6 +305,12 @@ def generate_content(usercode,content_code,url,raw_data,type):
     while retries < 3:
         try:
             response = safe_get(f"{URL}/{url}")
+            
+            #se salta el post/comentario si es error 403 
+            #(bloqueo de subreddits, como r/Drugs)
+            if response.status_code == 403:
+                return False, 0
+            
             response.raise_for_status()
             break
             
