@@ -21,13 +21,13 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 import threading
 from datetime import datetime,timezone
-
+import logging
 
 
 ##---------------------CONSTANTES---------------------##
 
 #numero maximo de paginas a scrapear
-MAX_SR_PAGES = 1
+MAX_SR_PAGES = 2
 MAX_COMMENT_PAGES = 1
 MAX_POST_PAGES = 1
 
@@ -57,8 +57,10 @@ RANDOM_DELAY_VARIATION = 1.5
 #delay base antes de hacer peticiones
 BASE_DELAY = 5
 
+#numero maximo de intentos de peticiones
 MAX_RETRIES = 3
 
+#timeout inicial despues de fallos de peticiones
 INITIAL_TIMEOUT = 30
 
 ##----------------VARIABLES GLOBALES-------------------##
@@ -92,6 +94,17 @@ session = None
 
 file_lock = threading.Lock()
 
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S',
+    handlers=[
+        logging.FileHandler('crawler.log'),
+        logging.StreamHandler()
+    ]
+)
+
+logger = logging.getLogger(__name__)
 
 ##---------------------FUNCIONES------------------------##
 
@@ -105,8 +118,7 @@ def search_users():
         new_posts = 0
         new_comments = 0
         
-        print(f"\n\n---- SUBREDDIT: {sr}")
-        
+        logger.info(f"Starting subreddit: {sr}")        
         
         url = f"{URL}{sr}/.json?limit={LIMIT_SR}"
         page = 1
@@ -124,11 +136,11 @@ def search_users():
                     if response.status_code == 429:
                         retries+=1
                         if retries < MAX_RETRIES:
-                            print(f"Rate limit alcanzado para url: {url}.\nIntento {retries}/{MAX_RETRIES}. Esperando {INITIAL_TIMEOUT*retries}s...")
+                            logger.warning(f"Rate limit reached for subreddit URL. Attempt {retries}/{MAX_RETRIES}. Waiting {INITIAL_TIMEOUT*retries}s...")
                             random_delay(INITIAL_TIMEOUT*retries)
                             continue
                         else:
-                            print("Número máximo de intentos alcanzado.")
+                            logger.error("Max. number of attempts reached.")
                             break
                         
                     if response.status_code == 200: #si la request funciona
@@ -167,8 +179,7 @@ def search_users():
 
                                             
                 except (requests.ConnectionError, requests.Timeout) as e:
-                    print(f"Error de conexión: {e}")
-                    print("Esperando 60 segundos antes de reintentar...")
+                    logger.error(f"Connection error. Waiting 60s...")
                     random_delay(60)
                     continue
                 
@@ -185,9 +196,9 @@ def search_users():
                 url = f"{URL}{sr}/.json?limit={LIMIT_SR}&after={after}&count={(page-1)*count}"
             
         
-        print(f"Usuarios encontrados: {new_users}")
-        print(f"Posts encontrados: {new_posts}")
-        print(f"Comentarios encontrados: {new_comments}")
+        logger.info(f"Number of users saved: {new_users}")
+        logger.info(f"Number of posts saved: {new_posts}")
+        logger.info(f"Number of comments saved: {new_comments}")
                         
                     
 def process_user_data(usercode,raw_user_data):
@@ -226,11 +237,11 @@ def process_user_data(usercode,raw_user_data):
                 if response.status_code == 429:
                     retries+=1
                     if retries < MAX_RETRIES:
-                        print(f"Rate limit alcanzado para url: {url}.\nIntento {retries}/{MAX_RETRIES}. Esperando {INITIAL_TIMEOUT*retries}s...")
+                        logger.warning(f"Rate limit reached for user post URL. Attempt {retries}/{MAX_RETRIES}. Waiting {INITIAL_TIMEOUT*retries}s...")
                         random_delay(INITIAL_TIMEOUT*retries)
                         continue
                     else:
-                        print("Número máximo de intentos alcanzado.")
+                        logger.error("Max. number of attempts reached.")
                         break
         
                 if response.status_code == 200: #si la request funciona
@@ -263,8 +274,7 @@ def process_user_data(usercode,raw_user_data):
                     
                                     
             except (requests.ConnectionError, requests.Timeout) as e:
-                print(f"Error de conexión: {e}")
-                print("Esperando 60 segundos antes de reintentar...")
+                logger.error(f"Connection error. Waiting 60s...")
                 random_delay(60)
                 continue
             
@@ -298,11 +308,11 @@ def process_user_data(usercode,raw_user_data):
                 if response.status_code == 429:
                     retries+=1
                     if retries < MAX_RETRIES:
-                        print(f"Rate limit alcanzado para url: {url}.\nIntento {retries}/{MAX_RETRIES}. Esperando {INITIAL_TIMEOUT*retries}s...")
+                        logger.warning(f"Rate limit reached for user comments URL. Attempt {retries}/{MAX_RETRIES}. Waiting {INITIAL_TIMEOUT*retries}s...")
                         random_delay(INITIAL_TIMEOUT*retries)
                         continue
                     else:
-                        print("Número máximo de intentos alcanzado.")
+                        logger.error("Max. number of attempts reached.")
                         break
             
                 if response.status_code == 200: #si la request funciona
@@ -336,8 +346,7 @@ def process_user_data(usercode,raw_user_data):
                                     
                                     
             except (requests.ConnectionError, requests.Timeout) as e:
-                print(f"Error de conexión: {e}")
-                print("Esperando 60 segundos antes de reintentar...")
+                logger.error(f"Connection error. Waiting 60s...")
                 random_delay(60)
                 continue
             
@@ -636,7 +645,7 @@ def flush_files():
                 content_file.flush()
                 os.fsync(content_file.fileno())
         except Exception as e:
-            print(f"Error al escribir ficheros: {e}")
+            logger.error(f"Error when writing files: {e}")
  
        
 def process_phrases(raw_phrases):
@@ -717,7 +726,7 @@ def safe_get(url):
 
 if __name__ == "__main__":
     if len(sys.argv) < 5:
-        print("Uso: python crawler.py <user_data> <content_data> <searched_phrases.csv> <subreddit_list.json>")
+        print("Use: python crawler.py <user_data> <content_data> <searched_phrases.csv> <subreddit_list.json>")
         sys.exit(1)
         
     ud_filename = sys.argv[1]
@@ -729,7 +738,7 @@ if __name__ == "__main__":
     secret_key = os.environ.get('REDDIT_SECRET_KEY')
     
     if not secret_key:
-        raise ValueError("Se requiere REDDIT_SECRET_KEY como variable de entorno")
+        raise ValueError("REDDIT_SECRET_KEY env variable needed")
 
     #leo los ficheros
     user_data = read_csv_file(ud_filename)
@@ -750,6 +759,7 @@ if __name__ == "__main__":
     session = create_session()
 
     #busco usuarios y contenido
+    logger.info(f"Starting crawler. Users file: {ud_filename}, Content file: {c_filename}")
     try:
         search_users()
     finally:
@@ -759,5 +769,7 @@ if __name__ == "__main__":
     with file_lock:
         user_file.close()
         content_file.close()
+        
+    logger.info("Crawler finished successfully")
     
     sys.exit(0)
