@@ -56,7 +56,7 @@ def update_users(user_data,filename):
 
 
 def update_content(content_data,filename):
-    columns = ["id","user","type","subreddit","text","has_ADHD_pattern"]
+    columns = ["id","user","type","subreddit","text","timestamp","has_ADHD_pattern","has_media"]
     
     with open(filename, 'w', newline='', encoding='utf-8') as f:
         writer = csv.DictWriter(f, fieldnames=columns)

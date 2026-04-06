@@ -11,7 +11,6 @@
 
 import sys
 import csv
-import shutil
 import os
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -47,21 +46,24 @@ def join_user_data(ud_filename_0,ud_filename_1,ud_filename_2):
             
      
 def join_content_data(c_filename_0,c_filename_1,c_filename_2):
-    columns = ["id","user","type","subreddit","text"]
+    columns = ["id","user","type","subreddit","text","timestamp","has_ADHD_pattern","has_media"]
     
     #abro los ficheros 1 y 2 como diccionarios 
     content_1 = read_csv_file(c_filename_1)
     content_2 = read_csv_file(c_filename_2)
     
-    shutil.copyfile(c_filename_1,c_filename_0)
+    for c in content_2.values():
+        if c["id"] not in content_1.keys():
+            c["has_media"] = c.get("has_media",False)
+            content_1[c["id"]] = c
+            
+        else:
+            content_1[c["id"]]["has_media"] = content_1[c["id"]].get("has_media",False) or c.get("has_media",False)
     
-    with open(c_filename_0, 'a', newline='', encoding='utf-8') as f:
-        f.write("\n")
+    with open(c_filename_0, 'w', newline='', encoding='utf-8') as f:
         w = csv.DictWriter(f, fieldnames=columns)
-        
-        for c in content_2.values():
-            if c["id"] not in content_1.keys():
-                w.writerow(c)
+        w.writeheader()
+        w.writerows(content_1.values())
 
 ##-------------------CODIGO PRINCIPAL-------------------##
 

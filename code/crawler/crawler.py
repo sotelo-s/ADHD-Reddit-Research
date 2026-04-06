@@ -2,8 +2,8 @@
     Crawler para Old Reddit. Genera (o actualiza) dos ficheros, uno con los datos de los usuarios
     de los que se ha obtenido información y los posts y comentarios asociados a este.
     
-    Uso: python crawler.py <user_data.csv> <content_data.csv> <searched_phrases.csv> <subreddit_list.json>
-    Ejemplo: python3 crawler.py ../out/user_data.csv ../out/post_data.csv ./data/adhd_phrases.json ./data/adhd_search_subreddits.json
+    Uso: python crawler.py <user_data.csv> <content_data.csv> <searched_phrases.csv> <subreddit_list.json> <media_folder>
+    Ejemplo: python3 crawler.py ../out/user_data.csv ../out/post_data.csv ./data/adhd_phrases.json ./data/adhd_search_subreddits.json ../out/media/
 '''
 
 
@@ -27,14 +27,14 @@ import logging
 ##---------------------CONSTANTES---------------------##
 
 #numero maximo de paginas a scrapear
-MAX_SR_PAGES = 2
+MAX_SR_PAGES = 1
 MAX_COMMENT_PAGES = 1
-MAX_POST_PAGES = 1
+MAX_POST_PAGES = 10
 
 #numero de elementos por pagina con un máximo de 100 (cambiar para pruebas)
 LIMIT_SR = 1
 LIMIT_COMMENT = 1
-LIMIT_POST = 1
+LIMIT_POST = 100
 
 #El número máximo de contenido que se saca de un usuario será:
 # LIMIT x (MAX_POST_PAGES + MAX_COMMENT_PAGES)
@@ -87,6 +87,8 @@ content_file_writer = None
 user_file = None
 user_file_writer = None
 
+m_folder = None
+
 #clave secreta para el hash
 secret_key = None
 
@@ -94,17 +96,8 @@ session = None
 
 file_lock = threading.Lock()
 
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    datefmt='%Y-%m-%d %H:%M:%S',
-    handlers=[
-        logging.FileHandler('crawler.log'),
-        logging.StreamHandler()
-    ]
-)
 
-logger = logging.getLogger(__name__)
+logger = None
 
 ##---------------------FUNCIONES------------------------##
 
@@ -395,13 +388,15 @@ def generate_content(usercode,content_code,raw_data,type):
     Genera los datos de un post o comentario y devuelve si ha detectado que el autor tiene TDAH
     También devuelve si se ha generado fila (1) o no (0)
     '''
-    global content_data
+    global content_data, m_folder
     
     if not raw_data or raw_data == {}:
         return False,0
     
     if content_code in content_data:
         return False, 0
+    
+    has_media = False
     
     data = {
         "id" : content_code,
@@ -431,11 +426,24 @@ def generate_content(usercode,content_code,raw_data,type):
     text = " ".join(text.split())
     data["text"] = text.strip()
     
-    if not data.get("text"):
+    #obtenemos imagenes
+    media_urls = extract_media_urls_from_text(data["text"])
+    
+    if type == "post":
+        media_urls.extend(extract_media_urls_from_post(raw_data))
+        
+    if media_urls:
+        media_urls = list(set(media_urls)) #elimino duplicados
+        for url in media_urls:
+            #solo marcamos que tiene imagenes si la descargamos correctamente
+            has_media = has_media or download_image(url, m_folder, content_code)
+    
+    if not data.get("text") and not has_media:
         return False, 0
     
     if data["text"] == "[removed]" or data["text"] == "" or data["text"] == "[deleted]" or data["text"] == "<image>":
-        return False, 0
+        if not has_media:
+            return False, 0
         
         
     search = ""
@@ -447,6 +455,7 @@ def generate_content(usercode,content_code,raw_data,type):
         
     adhd = search_ADHD(adhd_pattern,search)
     data["has_ADHD_pattern"] = adhd
+    data["has_media"] = has_media
 
     content_data[content_code] = data
     append_to_file(data,"content")
@@ -571,9 +580,13 @@ def read_csv_file(filename, id_column="id"):
             
             #por cada fila del csv
             for row in dictReader:
-                if "has_ADHD" in row: #convierto columna a boolean
+                if "has_ADHD" in row: #convierto columnas a boolean
                     row["has_ADHD"] = row["has_ADHD"].lower() == "true"
-                    
+                if "has_media" in row:
+                    row["has_media"] = row["has_media"].lower() == "true"
+                if "has_ADHD_pattern" in row:
+                    row["has_ADHD_pattern"] = row["has_ADHD_pattern"].lower() == "true"    
+                
                 data[row[id_column]] = row
                 
     except FileNotFoundError:
@@ -598,7 +611,7 @@ def prepare_file(filename,type):
     if type == "user":
         columns = ["id","has_ADHD","first_found_in"]
     else:
-        columns = ["id","user","type","subreddit","text","timestamp","has_ADHD_pattern"]
+        columns = ["id","user","type","subreddit","text","timestamp","has_ADHD_pattern","has_media"]
         
     file_exists = False
             
@@ -722,23 +735,185 @@ def safe_get(url):
     random_delay(BASE_DELAY)
     return session.get(url, timeout=30)
 
+
+def download_image(media_url,media_path,content_id):
+    
+    if not media_url:
+        return False
+    
+    content_folder = os.path.join(media_path, content_id)
+    os.makedirs(content_folder, exist_ok=True)
+    
+    extension = '.jpg'
+    url_lower = media_url.lower()
+    if '.png' in url_lower:
+        extension = '.png'
+    elif '.webp' in url_lower:
+        extension = '.webp'
+        
+    existing_files = [f for f in os.listdir(content_folder) if f.startswith('image')]
+    next_num = len(existing_files) + 1
+    filename = f"image{next_num}{extension}"
+    filepath = os.path.join(content_folder, filename)
+    
+    media_headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+        'Referer': 'https://www.reddit.com/',
+        'Accept': 'image/webp,image/apng,image/*,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Accept-Encoding': 'gzip, deflate, br',
+        'Connection': 'keep-alive',
+        'Sec-Fetch-Dest': 'image',
+        'Sec-Fetch-Mode': 'no-cors',
+        'Sec-Fetch-Site': 'cross-site'
+    }
+    
+    try:
+        random_delay(BASE_DELAY)
+        response = session.get(media_url, headers=media_headers, timeout=30,allow_redirects=True)
+        
+        if response.status_code == 200:
+            with open(filepath, 'wb') as f:
+                f.write(response.content)
+            #logger.debug(f"Downloaded media with url: {media_url}")
+            return True
+        else:
+            logger.warning(f"Failed to download media for {content_id}: HTTP {response.status_code}")
+            return False
+    except Exception as e:
+        logger.error(f"Error downloading media for {content_id}: {e}")
+        return False
+    
+def extract_media_urls_from_post(content_data):
+    media_urls = []
+    
+    #si es imagen directa
+    if not content_data.get('is_self', True):
+        url = content_data.get('url', '')
+        if url and ('i.redd.it' in url or 'i.imgur.com' in url or '.jpg' in url or '.png' in url):
+            #elimino parametros
+            clean_url = url.split('?')[0]
+            clean_url = clean_url.replace('&amp;', '&')
+            media_urls.append(clean_url)
+        
+        #vemos preview
+        preview = content_data.get('preview', {})
+        images = preview.get('images', [])
+        for img in images:
+            source = img.get('source', {})
+            url = source.get('url', '')
+            if not url:
+                continue
+
+            if 'external-preview.redd.it' in url:
+                original = content_data.get('url_overridden_by_dest') or content_data.get('url')
+                if original and original not in media_urls:
+                    media_urls.append(original)
+                continue
+            #elimino parametros
+            clean_url = url.split('?')[0]
+            clean_url = clean_url.replace('&amp;', '&')
+            if 'preview.redd.it' in clean_url:
+                clean_url = clean_url.replace('preview.redd.it', 'i.redd.it')
+            if clean_url not in media_urls:
+                media_urls.append(clean_url)
+    
+    #post con galeria
+    if content_data.get('is_gallery', False):
+        gallery_data = content_data.get('gallery_data', {})
+        media_metadata = content_data.get('media_metadata', {})
+        
+        if gallery_data and isinstance(gallery_data,dict):
+            for item_id in gallery_data.get('items', []):
+                if isinstance(item_id, dict):
+                    item_id = item_id.get('media_id', '')
+                if item_id in media_metadata:
+                    meta = media_metadata[item_id]
+                    if meta.get('e') in ['Image', 'AnimatedImage']:
+                        #obtengo mejor calidad
+                        variants = meta.get('s', {}).get('variants', {})
+                        if 'gif' in variants:
+                            media_urls.append(variants['gif']['u'])
+                        else:
+                            #url estandar
+                            url = meta.get('s', {}).get('u', '')
+                            if not url:
+                                continue
+
+                            if 'external-preview.redd.it' in url:
+                                original = content_data.get('url_overridden_by_dest') or content_data.get('url')
+                                if original and original not in media_urls:
+                                    media_urls.append(original)
+                                continue
+                        
+                            clean_url = url.split('?')[0]
+                            clean_url = clean_url.replace('&amp;', '&')
+                            if 'preview.redd.it' in clean_url:
+                                clean_url = clean_url.replace('preview.redd.it', 'i.redd.it')
+                            media_urls.append(clean_url)
+    
+    #me quedo solo con las imagenes (sin gifs)
+    media_urls = [
+        url for url in media_urls
+        if url.lower().split('?')[0].endswith(('.jpg', '.jpeg', '.png', '.webp'))
+    ]
+    
+    return media_urls
+
+def extract_media_urls_from_text(text):
+    if not text:
+        return []
+    
+    media_urls = []
+    
+    reddit_img_pattern = r'https?://(?:i\.|preview\.)redd\.it/[^\s<>"\'\)]+\.(?:jpg|jpeg|png|webp)'
+    imgur_pattern = r'https?://(?:i\.)?imgur\.com/[^\s<>"\'\)]+(?:\.(?:jpg|jpeg|png))?'
+    
+    pattern = '|'.join([reddit_img_pattern, imgur_pattern])
+    
+    matches = re.findall(pattern, text, re.IGNORECASE)
+    
+    for url in matches:
+        #limpiamos parametros
+        clean_url = url.split('?')[0]
+        clean_url = clean_url.rstrip(')').rstrip('.').rstrip(')')
+        clean_url = clean_url.replace('&amp;', '&')
+        media_urls.append(clean_url)
+    
+    return media_urls
+
 ##-------------------CODIGO PRINCIPAL-------------------##
 
 if __name__ == "__main__":
-    if len(sys.argv) < 5:
-        print("Use: python crawler.py <user_data> <content_data> <searched_phrases.csv> <subreddit_list.json>")
+    if len(sys.argv) < 6:
+        print("Use: python crawler.py <user_data> <content_data> <searched_phrases.csv> <subreddit_list.json> <media_folder>")
         sys.exit(1)
         
     ud_filename = sys.argv[1]
     c_filename = sys.argv[2]
     phrases_filename = sys.argv[3]
     sr_filename = sys.argv[4]
+    m_folder = sys.argv[5]
     
     #obtengo la clave secreta para el hash
     secret_key = os.environ.get('REDDIT_SECRET_KEY')
     
     if not secret_key:
         raise ValueError("REDDIT_SECRET_KEY env variable needed")
+    
+    #empiezo logger
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(levelname)s - %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S',
+        handlers=[
+            logging.FileHandler('crawler.log'),
+            logging.StreamHandler()
+        ]
+    )
+    
+    logger = logging.getLogger(__name__)
+
 
     #leo los ficheros
     user_data = read_csv_file(ud_filename)
@@ -757,9 +932,13 @@ if __name__ == "__main__":
 
     #creo la sesión
     session = create_session()
+    
+    #creo el directorio de imagenes si no existe
+    os.makedirs(m_folder, exist_ok = True)
 
     #busco usuarios y contenido
-    logger.info(f"Starting crawler. Users file: {ud_filename}, Content file: {c_filename}")
+    logger.info(f"Starting crawler. Users file: {ud_filename}, Content file: {c_filename}, Media folder: {m_folder}")
+    
     try:
         search_users()
     finally:
