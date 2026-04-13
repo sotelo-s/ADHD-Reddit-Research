@@ -827,7 +827,7 @@ def extract_media_urls_from_post(content_data):
             for item_id in gallery_data.get('items', []):
                 if isinstance(item_id, dict):
                     item_id = item_id.get('media_id', '')
-                if item_id in media_metadata:
+                if media_metadata and item_id in media_metadata:
                     meta = media_metadata[item_id]
                     if meta.get('e') in ['Image', 'AnimatedImage']:
                         #obtengo mejor calidad
