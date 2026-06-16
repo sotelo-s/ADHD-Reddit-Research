@@ -12,17 +12,19 @@ import os
 import shutil
 
 def clean_data(users_df,content_df,media_folder,ud_filename_out,c_filename_out):
-    fix(users_df,content_df,media_folder)
     
-    remove_not_english(content_df)
-    remove_images(content_df)
-    remove_links(content_df)
-    remove_mentions(content_df)
-    remove_spoiler_tags(content_df)
-    remove_age_and_gender(content_df)
-    remove_empty(users_df,content_df)
     
-    users_df = add_extra_data(users_df,content_df)
+    content_df= remove_not_english(content_df)
+    content_df= remove_images(content_df)
+    content_df= remove_links(content_df)
+    content_df= remove_mentions(content_df)
+    content_df= remove_spoiler_tags(content_df)
+    content_df= remove_age_and_gender(content_df)
+    users_df, content_df= remove_empty(users_df,content_df)
+    
+    users_df, content_df = fix(users_df,content_df,media_folder)
+    
+    users_df,content_df = add_extra_data(users_df,content_df)
     
     users_df.to_csv(ud_filename_out,index=False)
     content_df.to_csv(c_filename_out,index=False)
@@ -68,6 +70,8 @@ def fix(users_df,content_df,media_folder):
     
     mask = content_df['id'].astype(str).isin(deleted_folders)
     content_df.loc[mask, 'has_media'] = False
+    
+    return users_df,content_df
         
 
     
@@ -80,32 +84,43 @@ def remove_not_english(content_df):
         except:
             return False
         
-    mask = content_df['text'].apply(is_english)
-    content_df.drop(content_df[~mask].index, inplace=True)
+    
+    is_english_mask = content_df['text'].apply(is_english)
+    remove_mask = ~is_english_mask & ~content_df['has_media']
+    content_df.drop(content_df[remove_mask].index, inplace=True)
+    
+    return content_df
 
 
 def remove_images(content_df):
     content_df['text'] = content_df['text'].str.replace({r'<image>':''}, regex=True)
+    return content_df
 
 
 def remove_links(content_df):
     content_df['text'] = content_df['text'].str.replace({r'\[.*\]\(.*\)':''}, regex=True)
+    return content_df
 
 
 def remove_mentions(content_df):
     content_df['text'] = content_df['text'].str.replace({r'[ru]\/[^\s\/]+':''}, regex=True, case=False)
+    return content_df
     
     
 def remove_spoiler_tags(content_df):
     content_df['text'] = content_df['text'].str.replace({r'(>!)|(!<)':''}, regex=True)
+    return content_df
 
 
 def remove_age_and_gender(content_df):
     content_df['text'] = content_df['text'].str.replace({r'\(\s*(?:\d+\s*(?:[FM]|NB|non-?binary|male|female|other|\?)?|(?:[FM]|NB|non-?binary|male|female|other|\?)\s*\d+)\s*\)':''}, regex=True, case=False)
-   
+    return content_df
    
    
 def remove_empty(users_df,content_df):
+    content_df['text'] = content_df['text'].str.replace(r'\s+', ' ', regex=True)
+    content_df['text'] = content_df['text'].str.strip()
+    
     #elimino vacios
     content_df.drop(content_df[(content_df.text == '')&(content_df.get("has_media",False) == False)].index,inplace=True)
     content_df.dropna(inplace=True)
@@ -113,6 +128,8 @@ def remove_empty(users_df,content_df):
     #elimino usuarios que no tienen contenido
     users_with_content = set(content_df['user'].unique())
     users_df.drop(users_df[~users_df['id'].isin(users_with_content)].index, inplace=True)
+    
+    return users_df,content_df
     
     
     
@@ -128,6 +145,13 @@ def add_extra_data(users_df,content_df):
     content_sum = content_df.groupby(['user','type']).count().reset_index()[['user','type','id']]
     
     content_sum = content_sum.pivot_table(index='user',columns='type', values='id', fill_value=0)
+    
+    if 'post' not in content_sum.columns:
+        content_sum['post'] = 0
+    if 'comment' not in content_sum.columns:
+        content_sum['comment'] = 0
+        
+        
     content_sum.rename(columns={'post': 'n_posts', 'comment': 'n_comments'},inplace=True)
 
     content_sum['n_posts'] = content_sum['n_posts'].astype(int)
@@ -146,7 +170,7 @@ def add_extra_data(users_df,content_df):
 
     users_df = users_df.merge(len_data, left_on="id", right_on="user")
     
-    return users_df
+    return users_df, content_df
     
 
 ##-------------------CODIGO PRINCIPAL-------------------##
